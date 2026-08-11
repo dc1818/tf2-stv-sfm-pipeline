@@ -23,4 +23,4 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText($gameInfo, $updated, $utf8NoBom)
 Write-Host 'tf_fix is now enabled in SFM.' -ForegroundColor Green
 Write-Host "Backup: $backup"
-Write-Host 'Close both Source Filmmaker and the SDK launcher, then start SFM again.'
+Write-Host 'Close Source Filmmaker, then start it again.'
