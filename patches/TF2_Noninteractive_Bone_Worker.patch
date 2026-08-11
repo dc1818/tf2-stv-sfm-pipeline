@@ -1,0 +1,803 @@
+diff --git a/src/game/client/client_tf.vpc b/src/game/client/client_tf.vpc
+index 1143ff2..f681832 100644
+--- a/src/game/client/client_tf.vpc
++++ b/src/game/client/client_tf.vpc
+@@ -282,6 +282,8 @@ $Project "Client (TF)"
+ 			$File	"tf\c_tf_objective_resource.h"
+ 			$File	"tf\c_tf_player.cpp"
+ 			$File	"tf\c_tf_player.h"
++			$File	"tf\tf_bone_worker.cpp"
++			$File	"tf\tf_bone_worker.h"
+ 			$File	"tf\c_tf_playerclass.h"
+ 			$File	"tf\c_tf_playerresource.cpp"
+ 			$File	"tf\c_tf_playerresource.h"
+@@ -995,4 +997,3 @@ $Project "Client (TF)"
+ 		$File "$SRCDIR\..\game\tf\resource\ClientScheme.res"
+ 	}
+ }
+-
+diff --git a/src/game/client/tf/c_tf_player.cpp b/src/game/client/tf/c_tf_player.cpp
+index 941823f..b4bdead 100644
+--- a/src/game/client/tf/c_tf_player.cpp
++++ b/src/game/client/tf/c_tf_player.cpp
+@@ -3865,6 +3865,8 @@ C_TFPlayer::C_TFPlayer() :
+ 	m_mapOverheadEffects( DefLessFunc( const char * ) )
+ {
+ 	m_pAttributes = this;
++	m_bBoneWorkerGhost = false;
++	m_iBoneWorkerWeaponRole = TF_WPN_TYPE_PRIMARY;
+ 
+ 	m_PlayerAnimState = CreateTFPlayerAnimState( this );
+ 	m_Shared.Init( this );
+@@ -4043,6 +4045,45 @@ C_TFPlayer::C_TFPlayer() :
+ 	engine->AddPhonemeFile( NULL );			// Null indicates to engine that we are done loading phonemes if there are any present
+ }
+ 
++bool C_TFPlayer::BoneWorkerInitialize( int iClass, int iTeam, const char *pszModel )
++{
++	if ( iClass < TF_FIRST_NORMAL_CLASS || iClass > TF_LAST_NORMAL_CLASS )
++		return false;
++
++	m_bBoneWorkerGhost = true;
++	m_iTeamNum = iTeam;
++	m_PlayerClass.BoneWorkerSetClass( iClass );
++	if ( !InitializeAsClientEntity( pszModel, RENDER_GROUP_OPAQUE_ENTITY ) )
++		return false;
++
++	AddEffects( EF_NODRAW | EF_NOINTERP );
++	DontRecordInTools();
++	return true;
++}
++
++void C_TFPlayer::BoneWorkerApplyState( const Vector &vecOrigin, const Vector &vecVelocity,
++	float flEyePitch, float flEyeYaw, int iFlags, int iWaterLevel,
++	bool bAlive, float flCycle, float flPlaybackRate, float flSimulationTime,
++	int iWeaponRole, const uint32 conditions[5] )
++{
++	m_bBoneWorkerGhost = true;
++	m_iBoneWorkerWeaponRole = iWeaponRole;
++	ClearFlags();
++	AddFlag( iFlags );
++	SetWaterLevel( iWaterLevel );
++	m_iHealth = bAlive ? MAX( 1, GetMaxHealth() ) : 0;
++	m_lifeState = bAlive ? LIFE_ALIVE : LIFE_DEAD;
++	m_angEyeAngles.Init( flEyePitch, flEyeYaw, 0.0f );
++	SetNetworkOrigin( vecOrigin );
++	SetAbsOrigin( vecOrigin );
++	SetAbsVelocity( vecVelocity );
++	SetAbsAngles( QAngle( 0.0f, flEyeYaw, 0.0f ) );
++	SetCycle( flCycle );
++	SetPlaybackRate( flPlaybackRate );
++	m_flSimulationTime = flSimulationTime;
++	m_Shared.BoneWorkerSetConditionBits( conditions[0], conditions[1], conditions[2], conditions[3], conditions[4] );
++}
++
+ C_TFPlayer::~C_TFPlayer()
+ {
+ 	ShowNemesisIcon( false );
+diff --git a/src/game/client/tf/c_tf_player.h b/src/game/client/tf/c_tf_player.h
+index 23ecbc6..0ced0c7 100644
+--- a/src/game/client/tf/c_tf_player.h
++++ b/src/game/client/tf/c_tf_player.h
+@@ -631,6 +631,15 @@ public:
+ 	void DoAnimationEvent( PlayerAnimEvent_t event, int nData = 0 );
+ 	bool PlayAnimEventInPrediction( PlayerAnimEvent_t event );
+ 
++	// State injection used only by the noninteractive STV bone worker.
++	bool BoneWorkerInitialize( int iClass, int iTeam, const char *pszModel );
++	void BoneWorkerApplyState( const Vector &vecOrigin, const Vector &vecVelocity,
++		float flEyePitch, float flEyeYaw, int iFlags, int iWaterLevel,
++		bool bAlive, float flCycle, float flPlaybackRate, float flSimulationTime,
++		int iWeaponRole, const uint32 conditions[5] );
++	bool IsBoneWorkerGhost() const { return m_bBoneWorkerGhost; }
++	int GetBoneWorkerWeaponRole() const { return m_iBoneWorkerWeaponRole; }
++
+ 	bool							GetPredictable( void ) const;
+ 
+ 	const QAngle& GetNetworkEyeAngles() const { return m_angEyeAngles; }
+@@ -675,6 +684,8 @@ public:
+ 	bool			m_bSaveMeParity;
+ 	bool			m_bOldSaveMeParity;
+ 	bool			m_bIsCoaching;
++	bool			m_bBoneWorkerGhost;
++	int				m_iBoneWorkerWeaponRole;
+ 
+ private:
+ 	void			UpdateTauntItem();
+diff --git a/src/game/client/tf/tf_bone_worker.cpp b/src/game/client/tf/tf_bone_worker.cpp
+new file mode 100644
+index 0000000..8267726
+--- /dev/null
++++ b/src/game/client/tf/tf_bone_worker.cpp
+@@ -0,0 +1,503 @@
++// Noninteractive STV animation worker for the Source SDK 2013 TF client.
++// Consume parser-resolved STV state without invoking playdemo, run
++// TF2's client animation state, and export final per-bone transforms.
++
++#include "cbase.h"
++#include "c_tf_player.h"
++#include "tf_bone_worker.h"
++#include "studio.h"
++#include "mathlib/mathlib.h"
++#include "tier1/utlvector.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++// memdbgon must be the last include file in a .cpp file!!!
++#include "tier0/memdbgon.h"
++
++struct BoneWorkerFrame_t
++{
++	uint64 frame;
++	uint32 demoTick;
++	uint32 serverTick;
++	float time;
++	uint32 entity;
++	uint32 serial;
++	bool inPVS;
++	int playerClass;
++	int team;
++	bool alive;
++	int flags;
++	int water;
++	Vector origin;
++	Vector velocity;
++	float pitch;
++	float yaw;
++	float cycle;
++	float playbackRate;
++	int sourceSequence;
++	uint32 conditions[5];
++	int weaponRole;
++	char weaponClass[128];
++	char model[MAX_PATH];
++};
++
++struct BoneWorkerEvent_t
++{
++	uint64 frame;
++	uint32 demoTick;
++	uint32 serverTick;
++	float time;
++	uint32 entity;
++	uint32 serial;
++	int event;
++	int data;
++	float fireDelay;
++};
++
++struct BoneWorkerGhost_t
++{
++	uint32 entity;
++	uint32 serial;
++	int playerClass;
++	int team;
++	uint64 lastFrame;
++	bool wroteSkeleton;
++	C_TFPlayer *player;
++	char model[MAX_PATH];
++};
++
++static uint64 BoneWorkerKey( uint32 entity, uint32 serial )
++{
++	return ( (uint64)serial << 32 ) | entity;
++}
++
++static int SplitTabs( char *line, char **fields, int maxFields )
++{
++	int count = 0;
++	char *start = line;
++	while ( count < maxFields )
++	{
++		fields[count++] = start;
++		char *tab = strchr( start, '\t' );
++		if ( !tab )
++			break;
++		*tab = '\0';
++		start = tab + 1;
++	}
++	for ( char *p = fields[count - 1]; *p; ++p )
++	{
++		if ( *p == '\r' || *p == '\n' )
++		{
++			*p = '\0';
++			break;
++		}
++	}
++	return count;
++}
++
++static bool ParseFrame( char **f, int count, BoneWorkerFrame_t &out )
++{
++	if ( count != 34 )
++		return false;
++	out.frame = _strtoui64( f[1], NULL, 10 );
++	out.demoTick = (uint32)strtoul( f[2], NULL, 10 );
++	out.serverTick = (uint32)strtoul( f[3], NULL, 10 );
++	out.time = (float)atof( f[4] );
++	out.entity = (uint32)strtoul( f[5], NULL, 10 );
++	out.serial = (uint32)strtoul( f[6], NULL, 10 );
++	out.inPVS = atoi( f[7] ) != 0;
++	out.playerClass = atoi( f[8] );
++	out.team = atoi( f[9] );
++	out.alive = atoi( f[10] ) != 0;
++	out.flags = atoi( f[11] );
++	out.water = atoi( f[12] );
++	out.origin.Init( (float)atof( f[13] ), (float)atof( f[14] ), (float)atof( f[15] ) );
++	out.velocity.Init( (float)atof( f[16] ), (float)atof( f[17] ), (float)atof( f[18] ) );
++	out.pitch = (float)atof( f[19] );
++	out.yaw = (float)atof( f[20] );
++	out.cycle = (float)atof( f[21] );
++	out.playbackRate = (float)atof( f[22] );
++	out.sourceSequence = atoi( f[23] );
++	for ( int i = 0; i < 5; ++i )
++		out.conditions[i] = (uint32)strtoul( f[24 + i], NULL, 10 );
++	out.weaponRole = atoi( f[31] );
++	V_strncpy( out.weaponClass, f[32], sizeof( out.weaponClass ) );
++	V_strncpy( out.model, f[33], sizeof( out.model ) );
++	return true;
++}
++
++static bool ParseEvent( char **f, int count, BoneWorkerEvent_t &out )
++{
++	if ( count != 10 )
++		return false;
++	out.frame = _strtoui64( f[1], NULL, 10 );
++	out.demoTick = (uint32)strtoul( f[2], NULL, 10 );
++	out.serverTick = (uint32)strtoul( f[3], NULL, 10 );
++	out.time = (float)atof( f[4] );
++	out.entity = (uint32)strtoul( f[5], NULL, 10 );
++	out.serial = (uint32)strtoul( f[6], NULL, 10 );
++	out.event = atoi( f[7] );
++	out.data = atoi( f[8] );
++	out.fireDelay = (float)atof( f[9] );
++	return true;
++}
++
++static void WriteJSONString( FILE *out, const char *text )
++{
++	fputc( '"', out );
++	for ( const unsigned char *p = (const unsigned char *)text; *p; ++p )
++	{
++		switch ( *p )
++		{
++		case '"': fputs( "\\\"", out ); break;
++		case '\\': fputs( "\\\\", out ); break;
++		case '\n': fputs( "\\n", out ); break;
++		case '\r': fputs( "\\r", out ); break;
++		case '\t': fputs( "\\t", out ); break;
++		default:
++			if ( *p < 0x20 ) fprintf( out, "\\u%04x", (unsigned int)*p );
++			else fputc( *p, out );
++		}
++	}
++	fputc( '"', out );
++}
++
++class CTFBoneWorker
++{
++public:
++	CTFBoneWorker() : m_pOutput( NULL ), m_flLastTime( -1.0f ), m_nCaptured( 0 ), m_nFailures( 0 ) {}
++	~CTFBoneWorker() { Cleanup(); }
++
++	bool Run( const char *inputPath, const char *outputPath )
++	{
++		FILE *input = fopen( inputPath, "rb" );
++		if ( !input )
++		{
++			Warning( "TF bone worker: cannot open input %s\n", inputPath );
++			return false;
++		}
++		m_pOutput = fopen( outputPath, "wb" );
++		if ( !m_pOutput )
++		{
++			fclose( input );
++			Warning( "TF bone worker: cannot create output %s\n", outputPath );
++			return false;
++		}
++
++		fprintf( m_pOutput, "{\"type\":\"metadata\",\"format\":\"tf2-final-bones\",\"format_version\":3,\"matrix_layout\":\"row_major_3x4\",\"quaternion_layout\":\"xyzw\",\"space\":{\"render_matrix\":\"entity_to_world\",\"world_matrix\":\"bone_to_world\",\"local_matrix\":\"bone_to_parent\",\"local_position\":\"bone_to_parent\",\"local_quaternion\":\"bone_to_parent\"}}\n" );
++
++		CUtlVector<BoneWorkerFrame_t> frames;
++		CUtlVector<BoneWorkerEvent_t> events;
++		uint64 group = ~0ULL;
++		char line[8192];
++		int lineNumber = 0;
++		while ( fgets( line, sizeof( line ), input ) )
++		{
++			++lineNumber;
++			if ( line[0] == '#' || line[0] == '\r' || line[0] == '\n' || line[0] == '\0' )
++				continue;
++			char *fields[40];
++			int count = SplitTabs( line, fields, ARRAYSIZE( fields ) );
++			uint64 recordGroup = count > 1 ? _strtoui64( fields[1], NULL, 10 ) : ~0ULL;
++			if ( group != ~0ULL && recordGroup != group )
++			{
++				ProcessGroup( group, frames, events );
++				frames.RemoveAll();
++				events.RemoveAll();
++			}
++			group = recordGroup;
++
++			if ( fields[0][0] == 'F' )
++			{
++				BoneWorkerFrame_t frame;
++				if ( ParseFrame( fields, count, frame ) ) frames.AddToTail( frame );
++				else { Warning( "TF bone worker: malformed F line %d (%d fields)\n", lineNumber, count ); ++m_nFailures; }
++			}
++			else if ( fields[0][0] == 'E' )
++			{
++				BoneWorkerEvent_t event;
++				if ( ParseEvent( fields, count, event ) ) events.AddToTail( event );
++				else { Warning( "TF bone worker: malformed E line %d (%d fields)\n", lineNumber, count ); ++m_nFailures; }
++			}
++		}
++		if ( group != ~0ULL )
++			ProcessGroup( group, frames, events );
++
++		fclose( input );
++		fprintf( m_pOutput, "{\"type\":\"complete\",\"captured_player_frames\":%u,\"failures\":%u}\n", m_nCaptured, m_nFailures );
++		fclose( m_pOutput );
++		m_pOutput = NULL;
++		Msg( "TF bone worker: wrote %u player frames to %s (%u failures)\n", m_nCaptured, outputPath, m_nFailures );
++		Cleanup();
++		return m_nCaptured > 0 && m_nFailures == 0;
++	}
++
++private:
++	BoneWorkerGhost_t *FindGhost( uint32 entity, uint32 serial )
++	{
++		uint64 key = BoneWorkerKey( entity, serial );
++		FOR_EACH_VEC( m_Ghosts, i )
++		{
++			if ( BoneWorkerKey( m_Ghosts[i].entity, m_Ghosts[i].serial ) == key )
++				return &m_Ghosts[i];
++		}
++		return NULL;
++	}
++
++	BoneWorkerGhost_t *GetGhost( const BoneWorkerFrame_t &frame )
++	{
++		BoneWorkerGhost_t *ghost = FindGhost( frame.entity, frame.serial );
++		if ( ghost && ghost->playerClass == frame.playerClass && ghost->team == frame.team && !V_stricmp( ghost->model, frame.model ) )
++			return ghost;
++
++		if ( ghost && ghost->player )
++		{
++			ghost->player->Remove();
++			ghost->player = NULL;
++		}
++
++		C_TFPlayer *player = new C_TFPlayer;
++		if ( !player || !player->BoneWorkerInitialize( frame.playerClass, frame.team, frame.model ) )
++		{
++			if ( player ) player->Remove();
++			Warning( "TF bone worker: failed to initialize model %s for entity %u:%u\n", frame.model, frame.entity, frame.serial );
++			++m_nFailures;
++			return NULL;
++		}
++
++		if ( !ghost )
++		{
++			int index = m_Ghosts.AddToTail();
++			ghost = &m_Ghosts[index];
++		}
++		ghost->entity = frame.entity;
++		ghost->serial = frame.serial;
++		ghost->playerClass = frame.playerClass;
++		ghost->team = frame.team;
++		ghost->lastFrame = ~0ULL;
++		ghost->wroteSkeleton = false;
++		ghost->player = player;
++		V_strncpy( ghost->model, frame.model, sizeof( ghost->model ) );
++		return ghost;
++	}
++
++	void ProcessGroup( uint64 group, CUtlVector<BoneWorkerFrame_t> &frames, CUtlVector<BoneWorkerEvent_t> &events )
++	{
++		if ( frames.Count() == 0 )
++			return;
++
++		fprintf( m_pOutput,
++			"{\"type\":\"timeline\",\"frame\":%llu,\"demo_tick\":%u,\"server_tick\":%u,\"time\":%.9g}\n",
++			group, frames[0].demoTick, frames[0].serverTick, frames[0].time );
++
++		float savedCurtime = gpGlobals->curtime;
++		float savedFrametime = gpGlobals->frametime;
++		float savedAbsoluteFrametime = gpGlobals->absoluteframetime;
++		int savedTickcount = gpGlobals->tickcount;
++		int savedFramecount = gpGlobals->framecount;
++
++		float time = frames[0].time;
++		float dt = m_flLastTime >= 0.0f ? time - m_flLastTime : 1.0f / 66.0f;
++		if ( dt <= 0.0f || dt > 0.25f ) dt = 1.0f / 66.0f;
++		gpGlobals->curtime = time;
++		gpGlobals->frametime = dt;
++		gpGlobals->absoluteframetime = dt;
++		gpGlobals->tickcount = (int)frames[0].serverTick;
++		gpGlobals->framecount = savedFramecount + (int)( group & 0x3fffffff );
++
++		FOR_EACH_VEC( frames, i )
++		{
++			BoneWorkerGhost_t *ghost = GetGhost( frames[i] );
++			if ( !ghost ) continue;
++			if ( ghost->lastFrame != ~0ULL && ghost->lastFrame + 1 != group )
++				ghost->player->m_PlayerAnimState->ClearAnimationState();
++			ghost->team = frames[i].team;
++			ghost->player->BoneWorkerApplyState(
++				frames[i].origin, frames[i].velocity, frames[i].pitch, frames[i].yaw,
++				frames[i].flags, frames[i].water, frames[i].alive, frames[i].cycle,
++				frames[i].playbackRate, frames[i].time, frames[i].weaponRole, frames[i].conditions );
++			ghost->lastFrame = group;
++		}
++
++		FOR_EACH_VEC( events, i )
++			m_PendingEvents.AddToTail( events[i] );
++
++		for ( int i = m_PendingEvents.Count() - 1; i >= 0; --i )
++		{
++			if ( time + 0.000001f < m_PendingEvents[i].time + m_PendingEvents[i].fireDelay )
++				continue;
++			BoneWorkerGhost_t *ghost = FindGhost( m_PendingEvents[i].entity, m_PendingEvents[i].serial );
++			if ( ghost && ghost->player )
++				ghost->player->DoAnimationEvent( (PlayerAnimEvent_t)m_PendingEvents[i].event, m_PendingEvents[i].data );
++			m_PendingEvents.FastRemove( i );
++		}
++
++		FOR_EACH_VEC( frames, i )
++		{
++			BoneWorkerGhost_t *ghost = FindGhost( frames[i].entity, frames[i].serial );
++			fprintf( m_pOutput,
++				"{\"type\":\"visibility\",\"frame\":%llu,\"entity_index\":%u,\"serial\":%u,\"visible\":%s}\n",
++				group, frames[i].entity, frames[i].serial, frames[i].inPVS ? "true" : "false" );
++			if ( !ghost || !ghost->player || !frames[i].inPVS ) continue;
++			ghost->player->UpdateClientSideAnimation();
++			Capture( frames[i], *ghost );
++		}
++
++		m_flLastTime = time;
++		gpGlobals->curtime = savedCurtime;
++		gpGlobals->frametime = savedFrametime;
++		gpGlobals->absoluteframetime = savedAbsoluteFrametime;
++		gpGlobals->tickcount = savedTickcount;
++		gpGlobals->framecount = savedFramecount;
++	}
++
++	void WriteSkeleton( const BoneWorkerFrame_t &frame, BoneWorkerGhost_t &ghost, CStudioHdr *hdr )
++	{
++		fprintf( m_pOutput, "{\"type\":\"skeleton\",\"entity_index\":%u,\"serial\":%u,\"model\":", frame.entity, frame.serial );
++		WriteJSONString( m_pOutput, ghost.model );
++		fputs( ",\"bones\":[", m_pOutput );
++		for ( int i = 0; i < hdr->numbones(); ++i )
++		{
++			if ( i ) fputc( ',', m_pOutput );
++			mstudiobone_t *bone = hdr->pBone( i );
++			fprintf( m_pOutput, "{\"index\":%d,\"name\":", i );
++			WriteJSONString( m_pOutput, bone->pszName() );
++			fprintf( m_pOutput, ",\"parent\":%d,\"flags\":%d}", bone->parent, bone->flags );
++		}
++		fputs( "]}\n", m_pOutput );
++		ghost.wroteSkeleton = true;
++	}
++
++	void Capture( const BoneWorkerFrame_t &frame, BoneWorkerGhost_t &ghost )
++	{
++		CStudioHdr *hdr = ghost.player->GetModelPtr();
++		if ( !hdr || hdr->numbones() <= 0 || hdr->numbones() > MAXSTUDIOBONES )
++		{
++			++m_nFailures;
++			return;
++		}
++		if ( !ghost.wroteSkeleton )
++			WriteSkeleton( frame, ghost, hdr );
++
++		matrix3x4_t world[MAXSTUDIOBONES];
++		for ( int i = 0; i < MAXSTUDIOBONES; ++i )
++			SetIdentityMatrix( world[i] );
++		ghost.player->InvalidateBoneCache();
++		if ( !ghost.player->SetupBones( world, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, frame.time ) )
++		{
++			Warning( "TF bone worker: SetupBones failed for entity %u:%u at frame %llu\n", frame.entity, frame.serial, frame.frame );
++			++m_nFailures;
++			return;
++		}
++
++		const QAngle &renderAngles = ghost.player->GetRenderAngles();
++		const Vector &renderOrigin = ghost.player->GetAbsOrigin();
++		matrix3x4_t entityWorld;
++		AngleMatrix( renderAngles, renderOrigin, entityWorld );
++		fprintf( m_pOutput,
++			"{\"type\":\"frame\",\"frame\":%llu,\"demo_tick\":%u,\"server_tick\":%u,\"time\":%.9g,\"entity_index\":%u,\"serial\":%u,\"class\":%d,\"team\":%d,\"model\":",
++			frame.frame, frame.demoTick, frame.serverTick, frame.time, frame.entity, frame.serial, frame.playerClass, frame.team );
++		WriteJSONString( m_pOutput, frame.model );
++		fprintf( m_pOutput, ",\"sequence\":%d,\"cycle\":%.9g,\"source_sequence\":%d,\"render_origin\":[%.9g,%.9g,%.9g],\"render_angles\":[%.9g,%.9g,%.9g],\"render_matrix\":[",
++			ghost.player->GetSequence(), ghost.player->GetCycle(), frame.sourceSequence,
++			renderOrigin.x, renderOrigin.y, renderOrigin.z,
++			renderAngles.x, renderAngles.y, renderAngles.z );
++		for ( int row = 0; row < 3; ++row )
++		{
++			for ( int column = 0; column < 4; ++column )
++			{
++				if ( row || column ) fputc( ',', m_pOutput );
++				fprintf( m_pOutput, "%.9g", entityWorld[row][column] );
++			}
++		}
++		fputs( "],\"bones\":[", m_pOutput );
++
++		for ( int i = 0; i < hdr->numbones(); ++i )
++		{
++			if ( i ) fputc( ',', m_pOutput );
++			matrix3x4_t local;
++			int parent = hdr->pBone( i )->parent;
++			if ( !( hdr->pBone( i )->flags & BONE_USED_BY_ANYTHING ) )
++			{
++				SetIdentityMatrix( local );
++			}
++			else if ( parent >= 0 )
++			{
++				matrix3x4_t inverseParent;
++				MatrixInvert( world[parent], inverseParent );
++				ConcatTransforms( inverseParent, world[i], local );
++			}
++			else
++			{
++				matrix3x4_t inverseEntity;
++				MatrixInvert( entityWorld, inverseEntity );
++				ConcatTransforms( inverseEntity, world[i], local );
++			}
++			Vector position;
++			Quaternion quaternion;
++			MatrixGetColumn( local, 3, position );
++			MatrixQuaternion( local, quaternion );
++			fprintf( m_pOutput, "{\"i\":%d,\"w\":[", i );
++			for ( int row = 0; row < 3; ++row )
++			{
++				for ( int column = 0; column < 4; ++column )
++				{
++					if ( row || column ) fputc( ',', m_pOutput );
++					fprintf( m_pOutput, "%.9g", world[i][row][column] );
++				}
++			}
++			fputs( "],\"l\":[", m_pOutput );
++			for ( int row = 0; row < 3; ++row )
++			{
++				for ( int column = 0; column < 4; ++column )
++				{
++					if ( row || column ) fputc( ',', m_pOutput );
++					fprintf( m_pOutput, "%.9g", local[row][column] );
++				}
++			}
++			fprintf( m_pOutput, "],\"p\":[%.9g,%.9g,%.9g],\"q\":[%.9g,%.9g,%.9g,%.9g]}",
++				position.x, position.y, position.z, quaternion.x, quaternion.y, quaternion.z, quaternion.w );
++		}
++		fputs( "]}\n", m_pOutput );
++		++m_nCaptured;
++	}
++
++	void Cleanup()
++	{
++		FOR_EACH_VEC( m_Ghosts, i )
++		{
++			if ( m_Ghosts[i].player )
++				m_Ghosts[i].player->Remove();
++		}
++		m_Ghosts.RemoveAll();
++		m_PendingEvents.RemoveAll();
++		if ( m_pOutput )
++		{
++			fclose( m_pOutput );
++			m_pOutput = NULL;
++		}
++	}
++
++	CUtlVector<BoneWorkerGhost_t> m_Ghosts;
++	CUtlVector<BoneWorkerEvent_t> m_PendingEvents;
++	FILE *m_pOutput;
++	float m_flLastTime;
++	uint32 m_nCaptured;
++	uint32 m_nFailures;
++};
++
++CON_COMMAND_F( tf_bone_worker, "Run resolved STV animation input: tf_bone_worker <worker_frames.tsv> <bones.ndjson>", FCVAR_CLIENTDLL )
++{
++	if ( args.ArgC() != 3 )
++	{
++		Warning( "Usage: tf_bone_worker <worker_frames.tsv> <bones.ndjson>\n" );
++		return;
++	}
++	CTFBoneWorker worker;
++	bool success = worker.Run( args[1], args[2] );
++	if ( !success )
++		Warning( "TF bone worker did not complete successfully.\n" );
++	engine->ClientCmd_Unrestricted( "quit\n" );
++}
+diff --git a/src/game/client/tf/tf_bone_worker.h b/src/game/client/tf/tf_bone_worker.h
+new file mode 100644
+index 0000000..f39998f
+--- /dev/null
++++ b/src/game/client/tf/tf_bone_worker.h
+@@ -0,0 +1,12 @@
++// Noninteractive STV animation worker for the Source SDK 2013 TF client.
++// This header intentionally has no engine-facing API.
++
++#ifndef TF_BONE_WORKER_H
++#define TF_BONE_WORKER_H
++#ifdef _WIN32
++#pragma once
++#endif
++
++// The implementation registers the tf_bone_worker console command.
++
++#endif // TF_BONE_WORKER_H
+diff --git a/src/game/shared/tf/tf_player_shared.cpp b/src/game/shared/tf/tf_player_shared.cpp
+index dc53814..0e64757 100644
+--- a/src/game/shared/tf/tf_player_shared.cpp
++++ b/src/game/shared/tf/tf_player_shared.cpp
+@@ -1098,6 +1098,17 @@ private:
+ #define CONDITION_VARS( name, cond ) \
+ CConditionVars< decltype( m_nPlayerCond ) > name( m_pOuter, cond, m_nPlayerCond, m_nPlayerCondEx, m_nPlayerCondEx2, m_nPlayerCondEx3, m_nPlayerCondEx4 )
+ 
++#ifdef CLIENT_DLL
++void CTFPlayerShared::BoneWorkerSetConditionBits( uint32 nCond0, uint32 nCond1, uint32 nCond2, uint32 nCond3, uint32 nCond4 )
++{
++	m_nPlayerCond = (int)nCond0;
++	m_nPlayerCondEx = (int)nCond1;
++	m_nPlayerCondEx2 = (int)nCond2;
++	m_nPlayerCondEx3 = (int)nCond3;
++	m_nPlayerCondEx4 = (int)nCond4;
++}
++#endif
++
+ //-----------------------------------------------------------------------------
+ // Purpose: Add a condition and duration
+ // duration of PERMANENT_CONDITION means infinite duration
+@@ -14791,4 +14802,3 @@ bool CTFPlayer::IsHelpmeButtonPressed() const
+ {
+ 	return m_flHelpmeButtonPressTime != 0.f;
+ }
+-
+diff --git a/src/game/shared/tf/tf_player_shared.h b/src/game/shared/tf/tf_player_shared.h
+index fdaef92..f5e3d68 100644
+--- a/src/game/shared/tf/tf_player_shared.h
++++ b/src/game/shared/tf/tf_player_shared.h
+@@ -342,6 +342,10 @@ public:
+ 	float		m_flRuneAcquireTime;
+ 
+ #ifdef CLIENT_DLL
++	// Offline animation-worker input. This intentionally changes only the
++	// condition bitfields; it does not create particles or sounds.
++	void	BoneWorkerSetConditionBits( uint32 nCond0, uint32 nCond1, uint32 nCond2, uint32 nCond3, uint32 nCond4 );
++
+ 	// This class only receives calls for these from C_TFPlayer, not
+ 	// natively from the networking system
+ 	virtual void OnPreDataChanged( void );
+diff --git a/src/game/shared/tf/tf_playeranimstate.cpp b/src/game/shared/tf/tf_playeranimstate.cpp
+index dc8414c..c6cfdf4 100644
+--- a/src/game/shared/tf/tf_playeranimstate.cpp
++++ b/src/game/shared/tf/tf_playeranimstate.cpp
+@@ -17,6 +17,7 @@
+ #include "in_buttons.h"
+ #include "debugoverlay_shared.h"
+ #include "tf_weapon_passtime_gun.h"
++#include "tf_weaponbase.h"
+ 
+ #ifdef CLIENT_DLL
+ #include "c_tf_player.h"
+@@ -128,6 +129,13 @@ Activity CTFPlayerAnimState::TranslateActivity( Activity actDesired )
+ 	translateActivity = ActivityOverride( translateActivity, NULL );
+ 
+ 	CBaseCombatWeapon *pWeapon = GetTFPlayer()->GetActiveWeapon();
++#ifdef CLIENT_DLL
++	if ( GetTFPlayer()->IsBoneWorkerGhost() )
++	{
++		translateActivity = TF_BoneWorkerTranslateActivity( translateActivity, GetTFPlayer()->GetBoneWorkerWeaponRole() );
++	}
++	else
++#endif
+ 	if ( pWeapon )
+ 	{
+ 		translateActivity = pWeapon->ActivityOverride( translateActivity, NULL );
+diff --git a/src/game/shared/tf/tf_playerclass_shared.cpp b/src/game/shared/tf/tf_playerclass_shared.cpp
+index ab8e511..8c2db0e 100644
+--- a/src/game/shared/tf/tf_playerclass_shared.cpp
++++ b/src/game/shared/tf/tf_playerclass_shared.cpp
+@@ -183,6 +183,15 @@ bool CTFPlayerClassShared::Init( int iClass )
+ 	return true;
+ }
+ 
++#ifdef CLIENT_DLL
++void CTFPlayerClassShared::BoneWorkerSetClass( int iClass )
++{
++	Assert( iClass >= TF_FIRST_NORMAL_CLASS && iClass <= TF_LAST_NORMAL_CLASS );
++	Reset();
++	m_iClass = iClass;
++}
++#endif
++
+ // If needed, put this into playerclass scripts
+ bool CTFPlayerClassShared::CanBuildObject( int iObjectType )
+ {
+diff --git a/src/game/shared/tf/tf_playerclass_shared.h b/src/game/shared/tf/tf_playerclass_shared.h
+index 74860e9..8af6a5d 100644
+--- a/src/game/shared/tf/tf_playerclass_shared.h
++++ b/src/game/shared/tf/tf_playerclass_shared.h
+@@ -37,6 +37,9 @@ public:
+ 	DECLARE_CLASS_NOBASE( CTFPlayerClassShared );
+ 
+ 	bool		Init( int iClass );
++#ifdef CLIENT_DLL
++	void		BoneWorkerSetClass( int iClass );
++#endif
+ 	bool		IsClass( int iClass ) const						{ return ( m_iClass == iClass ); }
+ 	int			GetClassIndex( void ) const						{ return m_iClass; }
+ 	void		Reset( void );
+diff --git a/src/game/shared/tf/tf_weaponbase.cpp b/src/game/shared/tf/tf_weaponbase.cpp
+index 638cc6f..86d6d89 100644
+--- a/src/game/shared/tf/tf_weaponbase.cpp
++++ b/src/game/shared/tf/tf_weaponbase.cpp
+@@ -4279,6 +4279,48 @@ acttable_t *CTFWeaponBase::ActivityList( int &iActivityCount )
+ 	return pTable;
+ }
+ 
++Activity TF_BoneWorkerTranslateActivity( Activity activity, int iWeaponRole )
++{
++	acttable_t *pTable = s_acttablePrimary;
++	int iActivityCount = ARRAYSIZE( s_acttablePrimary );
++
++	switch ( iWeaponRole )
++	{
++	case TF_WPN_TYPE_SECONDARY:
++		pTable = s_acttableSecondary; iActivityCount = ARRAYSIZE( s_acttableSecondary ); break;
++	case TF_WPN_TYPE_MELEE:
++		pTable = s_acttableMelee; iActivityCount = ARRAYSIZE( s_acttableMelee ); break;
++	case TF_WPN_TYPE_BUILDING:
++		pTable = s_acttableBuilding; iActivityCount = ARRAYSIZE( s_acttableBuilding ); break;
++	case TF_WPN_TYPE_PDA:
++		pTable = s_acttablePDA; iActivityCount = ARRAYSIZE( s_acttablePDA ); break;
++	case TF_WPN_TYPE_ITEM1:
++		pTable = s_acttableItem1; iActivityCount = ARRAYSIZE( s_acttableItem1 ); break;
++	case TF_WPN_TYPE_ITEM2:
++		pTable = s_acttableItem2; iActivityCount = ARRAYSIZE( s_acttableItem2 ); break;
++	case TF_WPN_TYPE_ITEM3:
++		pTable = s_acttableItem3; iActivityCount = ARRAYSIZE( s_acttableItem3 ); break;
++	case TF_WPN_TYPE_ITEM4:
++		pTable = s_acttableItem4; iActivityCount = ARRAYSIZE( s_acttableItem4 ); break;
++	case TF_WPN_TYPE_MELEE_ALLCLASS:
++		pTable = s_acttableMeleeAllclass; iActivityCount = ARRAYSIZE( s_acttableMeleeAllclass ); break;
++	case TF_WPN_TYPE_SECONDARY2:
++		pTable = s_acttableSecondary2; iActivityCount = ARRAYSIZE( s_acttableSecondary2 ); break;
++	case TF_WPN_TYPE_PRIMARY2:
++		pTable = s_acttablePrimary2; iActivityCount = ARRAYSIZE( s_acttablePrimary2 ); break;
++	case TF_WPN_TYPE_PRIMARY:
++	default:
++		break;
++	}
++
++	for ( int i = 0; i < iActivityCount; ++i )
++	{
++		if ( pTable[i].baseAct == activity )
++			return (Activity)pTable[i].weaponAct;
++	}
++	return activity;
++}
++
+ typedef struct
+ {
+ 	int			baseAct;
+diff --git a/src/game/shared/tf/tf_weaponbase.h b/src/game/shared/tf/tf_weaponbase.h
+index 22b82e8..4045a6b 100644
+--- a/src/game/shared/tf/tf_weaponbase.h
++++ b/src/game/shared/tf/tf_weaponbase.h
+@@ -806,6 +806,10 @@ private:
+ bool WeaponID_IsSniperRifle( int iWeaponID );
+ bool WeaponID_IsSniperRifleOrBow( int iWeaponID );
+ 
++// Translate through TF2's stock third-person activity tables without creating
++// a weapon entity. Used by the offline animation worker's client-only ghosts.
++Activity TF_BoneWorkerTranslateActivity( Activity activity, int iWeaponRole );
++
+ #define WEAPON_RANDOM_RANGE 10000
+ 
+ #ifdef CLIENT_DLL

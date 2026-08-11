@@ -1,0 +1,111 @@
+--- a/src/game/client/tf/tf_bone_worker.cpp
++++ b/src/game/client/tf/tf_bone_worker.cpp
+@@ -5,9 +5,11 @@
+ #include "cbase.h"
+ #include "c_tf_player.h"
+ #include "tf_bone_worker.h"
++#include "igamesystem.h"
+ #include "studio.h"
+ #include "mathlib/mathlib.h"
+ #include "tier1/utlvector.h"
++#include "tier0/icommandline.h"
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -167,11 +169,13 @@
+ class CTFBoneWorker
+ {
+ public:
+-	CTFBoneWorker() : m_pOutput( NULL ), m_flLastTime( -1.0f ), m_nCaptured( 0 ), m_nFailures( 0 ) {}
++	CTFBoneWorker() : m_pOutput( NULL ), m_flLastTime( -1.0f ), m_nCaptured( 0 ), m_nFailures( 0 ), m_nGroupsProcessed( 0 ) {}
+ 	~CTFBoneWorker() { Cleanup(); }
+ 
+ 	bool Run( const char *inputPath, const char *outputPath )
+ 	{
++		Msg( "TF bone worker: opening input %s\n", inputPath );
++		Msg( "TF bone worker: writing output %s\n", outputPath );
+ 		FILE *input = fopen( inputPath, "rb" );
+ 		if ( !input )
+ 		{
+@@ -287,6 +291,13 @@
+ 	{
+ 		if ( frames.Count() == 0 )
+ 			return;
++		++m_nGroupsProcessed;
++		if ( m_nGroupsProcessed == 1 || ( m_nGroupsProcessed % 250 ) == 0 )
++		{
++			Msg( "TF bone worker: processed %u timeline frames; captured %u player frames; failures %u\n",
++				m_nGroupsProcessed, m_nCaptured, m_nFailures );
++			fflush( m_pOutput );
++		}
+ 
+ 		fprintf( m_pOutput,
+ 			"{\"type\":\"timeline\",\"frame\":%llu,\"demo_tick\":%u,\"server_tick\":%u,\"time\":%.9g}\n",
+@@ -486,8 +497,67 @@
+ 	float m_flLastTime;
+ 	uint32 m_nCaptured;
+ 	uint32 m_nFailures;
++	uint32 m_nGroupsProcessed;
+ };
+ 
++// Command-line jobs are intentionally started only after the client has
++// completed sign-on to the worker's local map. Source executes ordinary '+foo'
++// startup commands too early and may drop all but their first argument.
++class CTFBoneWorkerAutoRunner : public CAutoGameSystemPerFrame
++{
++public:
++	CTFBoneWorkerAutoRunner() : CAutoGameSystemPerFrame( "CTFBoneWorkerAutoRunner" ), m_bAttempted( false ), m_nReadyFrames( 0 ) {}
++
++	virtual void Update( float frametime ) OVERRIDE
++	{
++		if ( m_bAttempted )
++			return;
++
++		const char *inputPath = CommandLine()->ParmValue( "-tf_bone_worker_input", "" );
++		const char *outputPath = CommandLine()->ParmValue( "-tf_bone_worker_output", "" );
++		if ( !inputPath[0] && !outputPath[0] )
++			return;
++
++		if ( !inputPath[0] || !outputPath[0] )
++		{
++			m_bAttempted = true;
++			Warning( "TF bone worker: both -tf_bone_worker_input and -tf_bone_worker_output are required.\n" );
++			engine->ClientCmd_Unrestricted( "quit\n" );
++			return;
++		}
++
++		if ( !engine->IsConnected() || !engine->IsInGame() )
++			return;
++
++		// Give client entities a few completed frames after sign-on.
++		if ( ++m_nReadyFrames < 5 )
++			return;
++
++		m_bAttempted = true;
++		const char *levelName = engine->GetLevelName();
++		if ( !levelName || V_stricmp( levelName, "maps/tf_bone_worker.bsp" ) )
++		{
++			Warning( "TF bone worker: refusing to run outside the local worker map (current level: %s).\n",
++				levelName ? levelName : "<none>" );
++			engine->ClientCmd_Unrestricted( "quit\n" );
++			return;
++		}
++
++		Msg( "TF bone worker: client sign-on complete on local map; starting animation job.\n" );
++		CTFBoneWorker worker;
++		bool success = worker.Run( inputPath, outputPath );
++		if ( !success )
++			Warning( "TF bone worker did not complete successfully.\n" );
++		engine->ClientCmd_Unrestricted( "quit\n" );
++	}
++
++private:
++	bool m_bAttempted;
++	int m_nReadyFrames;
++};
++
++static CTFBoneWorkerAutoRunner g_TFBoneWorkerAutoRunner;
++
+ CON_COMMAND_F( tf_bone_worker, "Run resolved STV animation input: tf_bone_worker <worker_frames.tsv> <bones.ndjson>", FCVAR_CLIENTDLL )
+ {
+ 	if ( args.ArgC() != 3 )
