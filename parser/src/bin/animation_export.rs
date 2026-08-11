@@ -90,7 +90,6 @@ pub struct AnimationExportStats {
 
 pub struct AnimationExporter {
     readable: BufWriter<File>,
-    worker: BufWriter<File>,
     class_names: HashMap<ClassId, String>,
     entities: BTreeMap<u32, ResolvedEntity>,
     last_positions: HashMap<(u32, u32), (f32, [f32; 3])>,
@@ -103,20 +102,8 @@ pub struct AnimationExporter {
 
 impl AnimationExporter {
     pub fn new(output_dir: &Path) -> std::io::Result<Self> {
-        let mut worker = BufWriter::new(File::create(output_dir.join("worker_frames.tsv"))?);
-        writeln!(worker, "#TF2_BONE_WORKER_INPUT\t2")?;
-        writeln!(
-            worker,
-            "#F\tframe\tdemo_tick\tserver_tick\ttime\tentity\tserial\tin_pvs\tclass\tteam\talive\tflags\twater\tx\ty\tz\tvx\tvy\tvz\tpitch\tyaw\tcycle\tplayback_rate\tsource_sequence\tcond0\tcond1\tcond2\tcond3\tcond4\tweapon_entity\tweapon_serial\tweapon_role\tweapon_class\tmodel"
-        )?;
-        writeln!(
-            worker,
-            "#E\tframe\tdemo_tick\tserver_tick\ttime\tentity\tserial\tevent\tdata\tfire_delay"
-        )?;
-
         Ok(Self {
             readable: BufWriter::new(File::create(output_dir.join("animation_inputs.ndjson"))?),
-            worker,
             class_names: HashMap::new(),
             entities: BTreeMap::new(),
             last_positions: HashMap::new(),
@@ -244,19 +231,6 @@ impl AnimationExporter {
         let time = server_tick_u32 as f32 * self.interval_per_tick;
 
         for event in events {
-            writeln!(
-                self.worker,
-                "E\t{}\t{}\t{}\t{:.9}\t{}\t{}\t{}\t{}\t{:.6}",
-                self.frame_index,
-                demo_tick_u32,
-                server_tick_u32,
-                time,
-                event.entity_index,
-                event.entity_serial,
-                event.event,
-                event.data,
-                event.fire_delay
-            )?;
             serde_json::to_writer(
                 &mut self.readable,
                 &json!({
@@ -357,33 +331,6 @@ impl AnimationExporter {
             let weapon_role = animation_role(weapon_class, class_index);
             let model = class_model(class_index);
 
-            writeln!(
-                self.worker,
-                "F\t{}\t{}\t{}\t{:.9}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                self.frame_index,
-                demo_tick_u32,
-                server_tick_u32,
-                time,
-                entity_index,
-                entity.serial,
-                if entity.in_pvs { 1 } else { 0 },
-                class_index,
-                team,
-                if alive { 1 } else { 0 },
-                flags,
-                water,
-                origin[0], origin[1], origin[2],
-                velocity[0], velocity[1], velocity[2],
-                pitch, yaw,
-                cycle, playback_rate, source_sequence,
-                conditions[0], conditions[1], conditions[2], conditions[3], conditions[4],
-                weapon_entity,
-                weapon_serial,
-                weapon_role,
-                sanitize_field(weapon_class),
-                model
-            )?;
-
             serde_json::to_writer(
                 &mut self.readable,
                 &json!({
@@ -431,7 +378,6 @@ impl AnimationExporter {
 
     pub fn finish(mut self) -> std::io::Result<AnimationExportStats> {
         self.readable.flush()?;
-        self.worker.flush()?;
         Ok(AnimationExportStats {
             logical_frames: self.frame_index,
             player_samples: self.player_samples,

@@ -1,5 +1,5 @@
 TF2 STV to SFM retail HLAE capture pipeline
-Bundle version: 0.6.2
+Bundle version: 0.7.0
 Primary animation path: retail TF2 x64 + HLAE AfxHookSource mirv_agr
 Required HLAE: 2.189.0 or newer
 Capture rate: 30 fps
@@ -23,9 +23,4 @@ Verified in the build environment:
 Requires user-side verification:
 - Current retail TF2 can play the supplied demo and has the exact map/content it references.
 - HLAE is current enough for TF2 x64 and hooks successfully on the user's installation.
-- A short SFM import visibly animates players and does not show the old SDK reference pose.
-
-Deprecated diagnostic path:
-- Source SDK 2013 commit 22288b919617be6c8ca3cefd7cca979cbb39a88c
-- tf2-final-bones v3 worker and bones-to-AGR converter
-- Structurally completed in prior testing, but visual SFM testing showed T-pose/reference-pose output.
+- A short SFM import visibly animates players.

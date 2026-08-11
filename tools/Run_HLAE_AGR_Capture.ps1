@@ -430,4 +430,4 @@ Write-Host ''
 Write-Host 'HLAE MULTI-CLIP AGR CAPTURE PASSED' -ForegroundColor Green
 Write-Host "Files:       $($captures.Count) separate sfm_import.agr files"
 Write-Host 'TF2 launches: 1'
-Write-Host 'This file contains the retail TF2 client animation result; it does not use the SDK ghost bones.'
+Write-Host 'This file contains the retail TF2 client animation result.'

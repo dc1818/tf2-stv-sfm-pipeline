@@ -29,7 +29,6 @@ $combined = [ordered]@{
         capture_fps = 30
         insecure = $true
         issued_connect_command = $false
-        sdk_ghost_worker_used = $false
     }
     capture = $capture
     counts = if ($parserManifest) { [ordered]@{
@@ -49,7 +48,7 @@ $combined = [ordered]@{
         generated_vdm = 'hlae_capture.vdm'
         generated_cfg = 'hlae_bootstrap.cfg'
     }
-    note = 'The earlier SDK ghost bones path is retained only as a diagnostic experiment because visual testing showed reference-pose/T-pose output. This project uses the actual retail TF2 client animation result.'
+    note = 'This project uses the final animation result evaluated by the retail TF2 client during local HLAE demo playback.'
 }
 $combined | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $project 'project.json') -Encoding UTF8
 Write-Host "Validated and wrote $(Join-Path $project 'project.json')"
