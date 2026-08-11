@@ -1,6 +1,6 @@
 # Import the HLAE GameRecord into Source Filmmaker
 
-Use the `sfm_import.agr` created by `Process_STV_To_SFM.bat` or `Record_Demo_With_HLAE.bat`. This file is already a short 30 FPS retail-TF2 capture; do not run it through the old `bones.ndjson` clip converter.
+Use the `sfm_import.agr` created by `Process_STV_To_SFM.bat` or `Record_Demo_With_HLAE.bat`. This file is already a short 30 FPS retail-TF2 capture.
 
 1. Run the pipeline GUI and choose the HLAE, TF2, and Source Filmmaker folders.
 2. Wait for the setup page to show **PASS — AdvancedFX SFM game-record rig: installed**.
@@ -18,7 +18,7 @@ animation-set menu, so no manual download or file copying is required.
 
 If SFM closes during import, capture a shorter tick range. Five to ten seconds (about 333–667 TF2 ticks) is a practical first test. SFM is a 32-bit application, so there is no launch option that gives it an unlimited address space.
 
-If players are still T-posed, verify that you imported the new HLAE `sfm_import.agr`, not an AGR converted from the old SDK `bones.ndjson`. Open `project.json`: it must say `animation_fidelity` is `retail-client-authoritative` and `sdk_ghost_worker_used` is `false`.
+If players are still T-posed, verify that you imported the HLAE `sfm_import.agr`. Open `project.json`: it must say `animation_fidelity` is `retail-client-authoritative`.
 
 The capture terminal must also show `HLAE AGR CAPTURE PASSED`. In the project `tf2_console.log`, search for:
 
