@@ -40,9 +40,13 @@ click **+ Add clip**. The GUI automatically creates an end tick 667 ticks
 later: a fixed 10-second range. Repeat for each moment you want to capture.
 
 **Create SFM clip project(s)** parses the demo one time into
-`parsed_demo_data`, then plays every queued range through retail TF2 and HLAE.
+`parsed_demo_data`, then launches retail TF2 and HLAE only once. One generated
+VDM starts and stops a separate AGR recording for every queued range, seeks
+toward the next range, and closes TF2 after the final clip.
 Every clip has its own folder under `clips` and its own `sfm_import.agr` for
-SFM import. The progress bar fills as parser and clip stages complete.
+SFM import. The progress bar advances when each stop marker appears in TF2's
+live console. Clip ranges may not overlap because HLAE has one active AGR
+recorder in the shared TF2 session.
 
 The TF2 worker remains demo-only: `-insecure`, LAN mode, and `playdemo`; it
 never generates a server-connect or matchmaking command.
@@ -52,7 +56,8 @@ retail TF2 client animation/render loop. It is not a fully headless server
 process. The GUI stops following the worker as soon as its TF2 process exits or
 crashes.
 
-The HLAE worker is the exact known-working worker from v0.5.11. It rejects a
-missing, undersized, or invalid-header AGR. Console output is batched and capped
+The HLAE launcher and process-monitoring path retains the known-working behavior
+from v0.5.11, with multi-clip VDM generation added. It rejects any missing,
+undersized, or invalid-header AGR. Console output is batched and capped
 by the GUI so a noisy client cannot flood and lock the window. Cancel terminates
 the active wrapper together with its HLAE and TF2 child-process tree.

@@ -1,5 +1,5 @@
 TF2 STV to SFM retail HLAE capture pipeline
-Bundle version: 0.5.16
+Bundle version: 0.6.0
 Primary animation path: retail TF2 x64 + HLAE AfxHookSource mirv_agr
 Required HLAE: 2.189.0 or newer
 Capture rate: 30 fps
@@ -7,7 +7,8 @@ SFM transport: afxGameRecord
 
 Verified in the build environment:
 - The original Rust parser source and complete JSON export remain bundled.
-- The launcher generates valid Source VDM PlayCommands for exact start/end demo ticks.
+- The launcher generates one Source VDM containing exact start/stop PlayCommands for every non-overlapping batch range.
+- Batch capture uses one retail TF2/HLAE process and writes a separate validated AGR into each clip folder.
 - mirv_agr is enabled before playdemo and records camera, players, weapons, projectiles, invisible entities, and persistent ragdolls.
 - The HLAE custom-loader interface is invoked noninteractively with tf_win64.exe and the x64 AfxHookSource.dll.
 - Launch arguments always include -insecure and +sv_lan 1; generated commands contain playdemo and never contain connect or matchmaking.

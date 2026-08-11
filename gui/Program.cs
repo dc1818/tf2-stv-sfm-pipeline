@@ -68,6 +68,7 @@ namespace Tf2StvSfmGui
         private bool pipelineShown;
         private bool setupAutomationRunning;
         private string lastBatch;
+        private int activeBatchClipCount;
 
         public MainForm()
         {
@@ -494,6 +495,8 @@ namespace Tf2StvSfmGui
             if (!File.Exists(demoBox.Text) || !demoBox.Text.EndsWith(".dem", StringComparison.OrdinalIgnoreCase)) { MessageBox.Show(this, "Choose an existing .dem file.", Text); return; }
             if (clips.Count == 0) { MessageBox.Show(this, "Add at least one 10-second clip start tick.", Text); return; }
             if (String.IsNullOrWhiteSpace(outputBox.Text)) { MessageBox.Show(this, "Choose an output location.", Text); return; }
+            List<ClipRange> batchClips = new List<ClipRange>();
+            foreach (ClipRange clip in clips) batchClips.Add(new ClipRange { Start = clip.Start, End = clip.End });
             BeginJob();
             try {
                 string batchRoot = Path.Combine(outputBox.Text, Path.GetFileNameWithoutExtension(demoBox.Text) + "_sfm_batch_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
@@ -502,19 +505,30 @@ namespace Tf2StvSfmGui
                 string parserDirectory = Path.Combine(batchRoot, "parsed_demo_data");
                 Directory.CreateDirectory(parserDirectory);
                 await RunParser(parserDirectory);
-                SetProgress(20, "Parser complete. Recording " + clips.Count + " clip(s)...");
-                for (int i = 0; i < clips.Count; ++i) {
-                    ClipRange clip = clips[i];
+                SetProgress(20, "Parser complete. Preparing one TF2/HLAE session for " + batchClips.Count + " clip(s)...");
+                List<string> clipDirectories = new List<string>();
+                StringBuilder plan = new StringBuilder();
+                plan.AppendLine("clip_index\tstart_tick\tend_tick\tclip_directory");
+                for (int i = 0; i < batchClips.Count; ++i) {
+                    ClipRange clip = batchClips[i];
                     string clipDirectory = Path.Combine(batchRoot, "clips", String.Format(CultureInfo.InvariantCulture, "clip_{0:000}_{1}-{2}", i + 1, clip.Start, clip.End));
                     Directory.CreateDirectory(clipDirectory);
-                    SetProgress(20 + (int)(70.0 * i / clips.Count), "Recording clip " + (i + 1) + " of " + clips.Count + "...");
-                    await RunCapture(clipDirectory, clip);
+                    clipDirectories.Add(clipDirectory);
+                    plan.AppendFormat(CultureInfo.InvariantCulture, "{0}\t{1}\t{2}\t{3}\r\n", i + 1, clip.Start, clip.End, clipDirectory);
+                }
+                string planPath = Path.Combine(batchRoot, "capture_plan.tsv");
+                File.WriteAllText(planPath, plan.ToString(), new UTF8Encoding(false));
+                activeBatchClipCount = batchClips.Count;
+                SetProgress(20, "Launching TF2 once to record all " + batchClips.Count + " clip(s)...");
+                await RunBatchCapture(batchRoot, planPath);
+                for (int i = 0; i < batchClips.Count; ++i) {
+                    string clipDirectory = clipDirectories[i];
+                    SetProgress(90 + (int)(8.0 * i / batchClips.Count), "Finalizing clip " + (i + 1) + " of " + batchClips.Count + "...");
                     await RunFinalizer(clipDirectory, parserDirectory);
-                    SetProgress(20 + (int)(70.0 * (i + 1) / clips.Count), "Finished clip " + (i + 1) + " of " + clips.Count + ".");
                 }
                 File.WriteAllText(Path.Combine(batchRoot, "batch.txt"), "Parsed data: parsed_demo_data\r\nClips: clips\r\n");
                 lastBatch = batchRoot;
-                FinishJob("Completed " + clips.Count + " SFM-ready clip project(s).", true);
+                FinishJob("Completed " + batchClips.Count + " SFM-ready clip project(s) from one TF2 session.", true);
             }
             catch (Exception ex) { FinishJob(ex.Message, false); }
         }
@@ -527,14 +541,13 @@ namespace Tf2StvSfmGui
             return RunWorker(executable, Quote(demoBox.Text) + " " + Quote(parserDirectory), root, jobLog);
         }
 
-        private Task<int> RunCapture(string clipDirectory, ClipRange clip)
+        private Task<int> RunBatchCapture(string batchDirectory, string planPath)
         {
             File.WriteAllText(Path.Combine(root, "HLAE_PATH.txt"), hlaeBox.Text.Trim() + Environment.NewLine);
-            string script = Path.Combine(root, "tools", "Run_HLAE_AGR_Capture.ps1");
-            string extra = "-DemoPath " + Quote(demoBox.Text) + " -ProjectDirectory " + Quote(clipDirectory) +
-                " -StartTick " + clip.Start.ToString(CultureInfo.InvariantCulture) + " -EndTick " + clip.End.ToString(CultureInfo.InvariantCulture) + " -HlaePath " + Quote(hlaeBox.Text.Trim());
+            string extra = "-DemoPath " + Quote(demoBox.Text) + " -ProjectDirectory " + Quote(batchDirectory) +
+                " -BatchPlanPath " + Quote(planPath) + " -HlaePath " + Quote(hlaeBox.Text.Trim());
             extra += " -Tf2Root " + Quote(Tf2Root());
-            Append(jobLog, "\r\n[2/3] HLAE capture: " + clip + "\r\n");
+            Append(jobLog, "\r\n[2/3] One HLAE/TF2 session will record all " + activeBatchClipCount + " queued clips.\r\n");
             return RunWorker("powershell.exe", PowerShellFile("Run_HLAE_AGR_Capture.ps1", extra), root, jobLog);
         }
 
@@ -620,8 +633,17 @@ namespace Tf2StvSfmGui
         private void AddClip(object sender, EventArgs e)
         {
             long start = Decimal.ToInt64(newStartTick.Value);
-            foreach (ClipRange item in clips) if (item.Start == start) return;
-            clips.Add(new ClipRange { Start = start, End = start + ClipTicks });
+            long end = start + ClipTicks;
+            foreach (ClipRange item in clips) {
+                if (start <= item.End && end >= item.Start) {
+                    MessageBox.Show(this,
+                        "That 10-second range overlaps an existing clip. One HLAE recorder cannot capture two AGR files at the same time. Choose a start tick after " +
+                        item.End.ToString("N0", CultureInfo.InvariantCulture) + ".",
+                        Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+            clips.Add(new ClipRange { Start = start, End = end });
             clips.Sort(delegate(ClipRange a, ClipRange b) { return a.Start.CompareTo(b.Start); });
             RefreshClipList();
         }
@@ -795,11 +817,18 @@ namespace Tf2StvSfmGui
         private void HandleWorkerOutput(TextBox target, string line)
         {
             Append(target, line + "\r\n");
-            if (target != setupLog) return;
-            Match match = Regex.Match(line, @"TF2SFM_PROGRESS:\s*(\d+)");
-            if (!match.Success) return;
-            int value;
-            if (Int32.TryParse(match.Groups[1].Value, out value)) SetSetupProgress(value);
+            if (target == setupLog) {
+                Match setupMatch = Regex.Match(line, @"TF2SFM_PROGRESS:\s*(\d+)");
+                int setupValue;
+                if (setupMatch.Success && Int32.TryParse(setupMatch.Groups[1].Value, out setupValue)) SetSetupProgress(setupValue);
+                return;
+            }
+            Match clipMatch = Regex.Match(line, @"TF2SFM_BATCH_CLIP_STOP_(\d+)");
+            int completed;
+            if (clipMatch.Success && Int32.TryParse(clipMatch.Groups[1].Value, out completed) && activeBatchClipCount > 0) {
+                SetProgress(20 + (int)(70.0 * completed / activeBatchClipCount),
+                    "Recorded clip " + completed + " of " + activeBatchClipCount + " in the current TF2 session.");
+            }
         }
 
         private void SetSetupProgress(int value)
