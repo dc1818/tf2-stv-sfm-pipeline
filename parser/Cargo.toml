@@ -49,10 +49,6 @@ path = "src/bin/direct_hits.rs"
 name = "export_all"
 path = "src/bin/export_all.rs"
 
-[[bin]]
-name = "bones_to_agr"
-path = "src/bin/bones_to_agr.rs"
-
 [dependencies]
 bitbuffer = { version = "0.11.3", features = ["serde"] }
 num_enum = "0.7.2"
