@@ -45,6 +45,9 @@ The mount fixes missing stock models, materials, particles, and sounds. It canno
 
 ## First setup
 
+Use a freshly extracted complete bundle. The parser source file
+`parser\src\bin\export_all.rs` must be present before building.
+
 Extract this folder, open it, and run:
 
 ```text
