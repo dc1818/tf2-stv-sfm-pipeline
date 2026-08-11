@@ -16,17 +16,16 @@ Install these once:
 
 - Current Steam **Team Fortress 2**. Launch it normally once, then close it.
 - **HLAE 2.189.0 or newer**: <https://github.com/advancedfx/advancedfx/releases/latest>
-- **AdvancedFX SFM import scripts**: <https://github.com/advancedfx/afx-sfm-scripts>
+- **AdvancedFX SFM import scripts**: the GUI downloads and installs the game-record rig automatically after you select the SFM folder. The upstream source is <https://github.com/advancedfx/afx-sfm-scripts>.
 - **Rust stable** (for the supplied STV parser): <https://rustup.rs/>
 - **Source Filmmaker** in Steam.
 
 The main HLAE pipeline does not require Visual Studio, Source SDK Base 2013 Multiplayer, or the SDK source checkout.
 
-Install the AdvancedFX `.py` files in:
-
-```text
-SourceFilmmaker\game\platform\scripts\sfm\animset
-```
+The setup page checks the AdvancedFX game-record rig separately from the TF2 content and
+`tf_fix` search path. It shows PASS only after
+`game\platform\scripts\sfm\animset\advancedfx_import_gameRecord.py` exists and passes
+content validation. If it is missing, the GUI installs it automatically.
 
 ## Fix missing current TF2 models
 
