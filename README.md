@@ -24,6 +24,5 @@ The retail capture worker launches TF2 with `-insecure`, LAN mode, and
 ## Repository layout
 
 - `parser/` — bundled STV parser and export binaries source.
-- `tools/` — HLAE, SFM-content, validation, and project-finalization scripts.
+- `tools/` — HLAE, SFM-content, setup, and project-finalization scripts.
 - `gui/` — Windows Forms setup and clip-capture application.
-- `patches/` — deprecated Source SDK diagnostic worker patches.
