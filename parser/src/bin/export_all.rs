@@ -129,23 +129,18 @@ fn main() -> Result<(), MainError> {
             "logical_frames": animation_stats.logical_frames,
             "player_samples": animation_stats.player_samples,
             "animation_events": animation_stats.animation_events,
-            "interval_per_tick": animation_stats.interval_per_tick,
-            "final_bones_status": "pending_noninteractive_worker"
+            "interval_per_tick": animation_stats.interval_per_tick
         },
         "files": {
             "header": "header.json",
             "packets": "packets.ndjson",
             "packet_index": "packet_index.ndjson",
-            "animation_inputs": "animation_inputs.ndjson",
-            "worker_input": "worker_frames.tsv",
-            "final_bones": "bones.ndjson"
+            "animation_inputs": "animation_inputs.ndjson"
         },
         "notes": [
             "packets.ndjson contains one complete parser-decoded top-level demo packet per line",
             "packet_index.ndjson contains packet order, tick, type, and original stream bit ranges",
             "animation_inputs.ndjson contains resolved per-player state and decoded player animation events",
-            "worker_frames.tsv is the deterministic input contract for the noninteractive Source animation worker",
-            "bones.ndjson is not produced by this parser stage; the run is incomplete until the worker creates it",
             "keep the original .dem file as the bit-exact source archive"
         ]
     });
