@@ -1,8 +1,6 @@
 # TF2 STV to SFM — retail HLAE capture pipeline
 
-This bundle parses a TF2 STV demo and records a selected tick range as an SFM-ready AdvancedFX GameRecord (`sfm_import.agr`). Version 0.2.0 uses the actual current retail TF2 client through HLAE. This is the animation-faithful route: TF2 itself plays the demo and computes the final player, weapon, overlay, pose-parameter, ragdoll, and bone state that HLAE records.
-
-The earlier Source SDK 2013 ghost worker remains in the bundle only for diagnosis and research. It created a structurally valid `bones.ndjson`, but the SFM visual test showed T-pose/reference-pose players. Structural validity was not proof of animation fidelity.
+This bundle parses a TF2 STV demo and records a selected tick range as an SFM-ready AdvancedFX GameRecord (`sfm_import.agr`). It uses the current retail TF2 client through HLAE: TF2 itself plays the demo and computes the final player, weapon, overlay, pose-parameter, ragdoll, and bone state that HLAE records.
 
 ## Safety boundary
 
@@ -20,7 +18,7 @@ Install these once:
 - **Rust stable** (for the supplied STV parser): <https://rustup.rs/>
 - **Source Filmmaker** in Steam.
 
-The main HLAE pipeline does not require Visual Studio, Source SDK Base 2013 Multiplayer, or the SDK source checkout.
+The main pipeline needs only retail TF2, HLAE, Rust, and Source Filmmaker.
 
 The setup page checks the AdvancedFX game-record rig separately from the TF2 content and
 `tf_fix` search path. It shows PASS only after
@@ -79,12 +77,12 @@ Start with 300–667 ticks because SFM can run out of memory on large multi-play
 The timestamped project folder beside the demo contains:
 
 - `packets.ndjson`, `packet_index.ndjson`, and the parser JSON outputs;
-- `animation_inputs.ndjson` and `worker_frames.tsv` from the original parser extension;
+- `animation_inputs.ndjson`, containing resolved player-state and player-animation-event data for analysis;
 - `sfm_import.agr` recorded directly by HLAE from retail TF2;
 - `project.json` linking the parsed data and capture range;
 - `hlae_capture.json`, generated VDM/CFG files, and `tf2_console.log` for debugging.
 
-The AGR is the animation data used by SFM. A separate `bones.ndjson` is intentionally not generated on this path because HLAE writes the client-computed transforms directly into AGR.
+The AGR is the animation data used by SFM. HLAE writes the client-computed transforms directly into AGR.
 
 ## Capture only
 
@@ -112,12 +110,5 @@ The launcher performs the tutorial workflow without the Demo Editor UI:
 
 Read [SFM_IMPORT.md](SFM_IMPORT.md). In short: create a dummy camera animation set, right-click it, select **Rig → advancedfx_import_gameRecord**, and choose `sfm_import.agr`.
 
-## Diagnostic SDK files
-
-The old research route is explicitly named:
-
-- `Install_SDK_Diagnostic_Worker.bat`
-- `Build_SDK_Diagnostic_Worker.bat`
-- `Process_STV_To_SFM_SDK_Diagnostic.bat`
 
 Do not use its AGR for a final SFM shot unless its animation implementation is repaired and visually validated against HLAE.
