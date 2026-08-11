@@ -384,6 +384,24 @@ namespace Tf2StvSfmGui
             return File.Exists(gameInfo) && File.ReadAllText(gameInfo).IndexOf("tf_fix", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private string AdvancedFxRigPath()
+        {
+            return Path.Combine(SfmRoot(), "game", "platform", "scripts", "sfm", "animset", "advancedfx_import_gameRecord.py");
+        }
+
+        private bool HasAdvancedFxRig()
+        {
+            string rig = AdvancedFxRigPath();
+            if (!File.Exists(rig)) return false;
+            try {
+                string text = File.ReadAllText(rig);
+                return text.IndexOf("ImportGameRecord", StringComparison.Ordinal) >= 0 &&
+                    text.IndexOf("afxGameRecord", StringComparison.Ordinal) >= 0 &&
+                    text.IndexOf("sfm.CreateAnimationSet", StringComparison.Ordinal) >= 0;
+            }
+            catch { return false; }
+        }
+
         private void RefreshSetupState()
         {
             int buildables = 0;
@@ -395,18 +413,20 @@ namespace Tf2StvSfmGui
             bool hasSfm = HasValidSfm();
             bool hasContent = hasSfm && HasContent(out buildables, out materials, out particles, out sounds);
             bool enabled = hasSfm && IsTfFixEnabled();
+            bool hasRig = hasSfm && HasAdvancedFxRig();
             StringBuilder text = new StringBuilder();
             text.AppendLine((hasHlae ? "PASS" : "NEEDS ACTION") + "  HLAE.exe: " + (hasHlae ? hlaeBox.Text : "choose it above"));
             text.AppendLine((hasTf2 ? "PASS" : "NEEDS ACTION") + "  TF2 folder: " + (hasTf2 ? Tf2Root() : "choose the folder containing tf_win64.exe"));
             text.AppendLine((hasSfm ? "PASS" : "NEEDS ACTION") + "  SFM folder: " + (hasSfm ? SfmRoot() : "choose the folder containing game\\usermod\\gameinfo.txt"));
             text.AppendLine((hasContent ? "PASS" : "NEEDS ACTION") + "  Current TF2 content: " + buildables + " buildable models, " + materials + " material files, " + particles + " particle files, " + sounds + " sound files");
             text.AppendLine((enabled ? "PASS" : "NEEDS ACTION") + "  SFM search path: tf_fix " + (enabled ? "enabled" : "not enabled"));
+            text.AppendLine((hasRig ? "PASS" : "NEEDS ACTION") + "  AdvancedFX SFM game-record rig: " + (hasRig ? "installed" : "not installed"));
             setupState.Text = text.ToString();
-            setupState.ForeColor = hasHlae && hasTf2 && hasSfm && hasContent && enabled ? Color.LightGreen : Color.Gainsboro;
+            setupState.ForeColor = hasHlae && hasTf2 && hasSfm && hasContent && enabled && hasRig ? Color.LightGreen : Color.Gainsboro;
 
             if (!hasHlae || !hasTf2 || !hasSfm) {
                 returnToClipsButton.Visible = false;
-            } else if (!hasContent || !enabled) {
+            } else if (!hasContent || !enabled || !hasRig) {
                 returnToClipsButton.Visible = false;
                 if (!busy && !setupAutomationRunning) {
                     BeginInvoke(new MethodInvoker(StartAutomaticSetup));
@@ -456,6 +476,9 @@ namespace Tf2StvSfmGui
                 }
                 if (!IsTfFixEnabled()) {
                     await RunWorker("powershell.exe", PowerShellFile("Enable_TF_Fix_In_SFM.ps1", "-SfmRoot " + Quote(SfmRoot())), root, setupLog);
+                }
+                if (!HasAdvancedFxRig()) {
+                    await RunWorker("powershell.exe", PowerShellFile("Install_AdvancedFX_SFM_Rig.ps1", "-SfmRoot " + Quote(SfmRoot())), root, setupLog);
                 }
                 RefreshSetupState();
                 EndSetupWork("Setup completed. The demo clip page is now available.", true);

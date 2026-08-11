@@ -12,6 +12,7 @@ echo   https://github.com/advancedfx/advancedfx/releases/latest
 echo.
 echo   AdvancedFX SFM import scripts:
 echo   https://github.com/advancedfx/afx-sfm-scripts
+echo   The GUI installs advancedfx_import_gameRecord.py automatically after you choose SFM.
 echo.
 echo HLAE is technically a hook. This pipeline always launches TF2 with -insecure,
 echo uses playdemo only, and never issues connect or matchmaking commands.
