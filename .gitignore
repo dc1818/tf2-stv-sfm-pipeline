@@ -1,0 +1,18 @@
+# Windows build outputs and local configuration
+TF2_STV_SFM_GUI.exe
+parser/target/
+HLAE_PATH.txt
+
+# Capture outputs
+*.agr
+*.ndjson
+*.log
+console.log
+*_sfm_batch_*/
+*_sfm_project_*/
+
+# Local editor files
+.vs/
+.vscode/
+*.user
+*.suo
