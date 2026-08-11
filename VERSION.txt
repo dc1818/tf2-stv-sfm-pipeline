@@ -1,0 +1,28 @@
+TF2 STV to SFM retail HLAE capture pipeline
+Bundle version: 0.5.16
+Primary animation path: retail TF2 x64 + HLAE AfxHookSource mirv_agr
+Required HLAE: 2.189.0 or newer
+Capture rate: 30 fps
+SFM transport: afxGameRecord
+
+Verified in the build environment:
+- The original Rust parser source and complete JSON export remain bundled.
+- The launcher generates valid Source VDM PlayCommands for exact start/end demo ticks.
+- mirv_agr is enabled before playdemo and records camera, players, weapons, projectiles, invisible entities, and persistent ragdolls.
+- The HLAE custom-loader interface is invoked noninteractively with tf_win64.exe and the x64 AfxHookSource.dll.
+- Launch arguments always include -insecure and +sv_lan 1; generated commands contain playdemo and never contain connect or matchmaking.
+- TF2 console output and AGR size progress are streamed to the terminal.
+- The resulting AGR header and version are validated before success is reported.
+- A backup-first SFM gameinfo tool mounts the user's current TF2 `tf` VPKs and loose content, with a restore BAT.
+- Mount hotfix: writes BOM-free UTF-8 KeyValues and uses normalized forward-slash paths; older SFM parsers reject a PowerShell UTF-8 BOM.
+- Recovery hotfix: restore scripts explicitly select the newest timestamped gameinfo backup and include an emergency restore BAT.
+
+Requires user-side verification:
+- Current retail TF2 can play the supplied demo and has the exact map/content it references.
+- HLAE is current enough for TF2 x64 and hooks successfully on the user's installation.
+- A short SFM import visibly animates players and does not show the old SDK reference pose.
+
+Deprecated diagnostic path:
+- Source SDK 2013 commit 22288b919617be6c8ca3cefd7cca979cbb39a88c
+- tf2-final-bones v3 worker and bones-to-AGR converter
+- Structurally completed in prior testing, but visual SFM testing showed T-pose/reference-pose output.
