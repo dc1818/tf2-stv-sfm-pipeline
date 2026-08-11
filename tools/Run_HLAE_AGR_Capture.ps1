@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$DemoPath,
     [string]$ProjectDirectory = '',
+    [string]$BatchPlanPath = '',
     [long]$StartTick = -1,
     [long]$EndTick = -1,
     [string]$HlaePath = '',
@@ -151,13 +152,6 @@ function Wait-ForExclusiveRead([string]$Path, [int]$Seconds) {
 
 $demo = Resolve-FilePath $DemoPath 'Demo'
 if ([IO.Path]::GetExtension($demo) -ine '.dem') { throw 'The input must be a .dem file.' }
-$StartTick = Read-CaptureTick 'Start demo tick' $StartTick 'use demoui; 0 starts at the beginning'
-$EndTick = Read-CaptureTick 'End demo tick' $EndTick ('10 seconds is about 667 ticks; suggested end: ' + ($StartTick + 667))
-if ($EndTick -le $StartTick) { throw 'The end tick must be greater than the start tick.' }
-if (($EndTick - $StartTick) -gt 4000) {
-    Write-Host 'WARNING: This is a long SFM capture. Start with 300-667 ticks to avoid SFM memory crashes.' -ForegroundColor Yellow
-}
-
 $hlaeExe = Resolve-HlaeExecutable $HlaePath
 $hookDll = Resolve-X64Hook $hlaeExe
 $tfRoot = Resolve-Tf2Root $Tf2Root
@@ -180,42 +174,110 @@ if (-not (Test-Path -LiteralPath $ProjectDirectory -PathType Container)) {
 }
 $project = (Resolve-Path -LiteralPath $ProjectDirectory).Path
 
+$captureRows = New-Object System.Collections.Generic.List[object]
+if ($BatchPlanPath) {
+    $resolvedPlan = Resolve-FilePath $BatchPlanPath 'Batch capture plan'
+    $planRows = @(Import-Csv -LiteralPath $resolvedPlan -Delimiter "`t")
+    if ($planRows.Count -eq 0) { throw 'The batch capture plan contains no clips.' }
+    foreach ($row in $planRows) {
+        $index = 0
+        $start = 0L
+        $end = 0L
+        if (-not [int]::TryParse($row.clip_index, [ref]$index) -or $index -lt 1) { throw 'The batch plan has an invalid clip_index.' }
+        if (-not [long]::TryParse($row.start_tick, [ref]$start) -or $start -lt 0) { throw "Clip $index has an invalid start_tick." }
+        if (-not [long]::TryParse($row.end_tick, [ref]$end) -or $end -le $start) { throw "Clip $index has an invalid end_tick." }
+        if (-not $row.clip_directory) { throw "Clip $index has no output directory." }
+        if (-not (Test-Path -LiteralPath $row.clip_directory -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $row.clip_directory -Force)
+        }
+        $captureRows.Add([pscustomobject]@{
+            Index = $index
+            StartTick = $start
+            EndTick = $end
+            ClipDirectory = (Resolve-Path -LiteralPath $row.clip_directory).Path
+        })
+    }
+    $captureRows = @($captureRows | Sort-Object StartTick, EndTick)
+} else {
+    $StartTick = Read-CaptureTick 'Start demo tick' $StartTick 'use demoui; 0 starts at the beginning'
+    $EndTick = Read-CaptureTick 'End demo tick' $EndTick ('10 seconds is about 667 ticks; suggested end: ' + ($StartTick + 667))
+    if ($EndTick -le $StartTick) { throw 'The end tick must be greater than the start tick.' }
+    $captureRows.Add([pscustomobject]@{ Index = 1; StartTick = $StartTick; EndTick = $EndTick; ClipDirectory = $project })
+    $captureRows = @($captureRows)
+}
+
+for ($i = 0; $i -lt $captureRows.Count; $i++) {
+    $capture = $captureRows[$i]
+    if (($capture.EndTick - $capture.StartTick) -gt 4000) {
+        Write-Host "WARNING: Clip $($capture.Index) is long. Start with 300-667 ticks to avoid SFM memory crashes." -ForegroundColor Yellow
+    }
+    if ($i -gt 0 -and $capture.StartTick -le $captureRows[$i - 1].EndTick) {
+        throw "Clip $($capture.Index) overlaps or touches clip $($captureRows[$i - 1].Index). AGR ranges must not overlap."
+    }
+}
+
 $job = 'tf2sfm_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '_' + $PID
 $demoLeaf = $job + '.dem'
 $vdmLeaf = $job + '.vdm'
 $cfgLeaf = $job + '.cfg'
-$agrLeaf = $job + '.agr'
 $tempDemo = Join-Path $tfGame $demoLeaf
 $tempVdm = Join-Path $tfGame $vdmLeaf
 $tempCfg = Join-Path $tfCfg $cfgLeaf
-$tempAgr = Join-Path $tfRoot $agrLeaf
-$alternateAgr = Join-Path $tfGame $agrLeaf
-$agrCandidates = @(
-    $tempAgr,
-    $alternateAgr,
-    (Join-Path $pipelineRoot $agrLeaf),
-    (Join-Path (Get-Location).Path $agrLeaf),
-    (Join-Path (Split-Path -Parent $hlaeExe) $agrLeaf)
-) | Select-Object -Unique
-$finalAgr = Join-Path $project 'sfm_import.agr'
 $auditVdm = Join-Path $project 'hlae_capture.vdm'
 $auditCfg = Join-Path $project 'hlae_bootstrap.cfg'
 $loaderOut = Join-Path $project 'hlae_loader_stdout.log'
 $loaderErr = Join-Path $project 'hlae_loader_stderr.log'
 
-$recordTick = [Math]::Max(1L, $StartTick)
-$skipTick = [Math]::Max(1L, $StartTick - [Math]::Max(0, $PreRollTicks))
+$captures = New-Object System.Collections.Generic.List[object]
+foreach ($row in $captureRows) {
+    $agrLeaf = $job + ('_clip_{0:000}.agr' -f $row.Index)
+    $candidates = @(
+        (Join-Path $tfRoot $agrLeaf),
+        (Join-Path $tfGame $agrLeaf),
+        (Join-Path $pipelineRoot $agrLeaf),
+        (Join-Path (Get-Location).Path $agrLeaf),
+        (Join-Path (Split-Path -Parent $hlaeExe) $agrLeaf)
+    ) | Select-Object -Unique
+    $captures.Add([pscustomobject]@{
+        Index = $row.Index
+        StartTick = $row.StartTick
+        EndTick = $row.EndTick
+        ClipDirectory = $row.ClipDirectory
+        AgrLeaf = $agrLeaf
+        AgrCandidates = $candidates
+        FinalAgr = Join-Path $row.ClipDirectory 'sfm_import.agr'
+    })
+}
+$allAgrCandidates = @($captures | ForEach-Object { $_.AgrCandidates } | Select-Object -Unique)
+
 $actions = New-Object System.Collections.Generic.List[string]
 $actionNumber = 1
+$firstCapture = $captures[0]
+$skipTick = [Math]::Max(1L, $firstCapture.StartTick - [Math]::Max(0, $PreRollTicks))
 if ($skipTick -gt 1) {
     $actions.Add("`t`"$actionNumber`"`r`n`t{`r`n`t`tfactory `"SkipAhead`"`r`n`t`tname `"TF2SFM preroll`"`r`n`t`tstarttick `"1`"`r`n`t`tskiptotick `"$skipTick`"`r`n`t}")
     $actionNumber++
 }
-$startCommands = "echo TF2SFM_CAPTURE_START; host_timescale 1; host_framerate 30; mirv_agr start $agrLeaf"
-$stopCommands = 'echo TF2SFM_CAPTURE_STOP; mirv_agr stop; host_timescale 1; host_framerate 0; quit'
-$actions.Add("`t`"$actionNumber`"`r`n`t{`r`n`t`tfactory `"PlayCommands`"`r`n`t`tname `"TF2SFM start AGR`"`r`n`t`tstarttick `"$recordTick`"`r`n`t`tcommands `"$startCommands`"`r`n`t}")
-$actionNumber++
-$actions.Add("`t`"$actionNumber`"`r`n`t{`r`n`t`tfactory `"PlayCommands`"`r`n`t`tname `"TF2SFM stop AGR`"`r`n`t`tstarttick `"$EndTick`"`r`n`t`tcommands `"$stopCommands`"`r`n`t}")
+for ($i = 0; $i -lt $captures.Count; $i++) {
+    $capture = $captures[$i]
+    $recordTick = [Math]::Max(1L, $capture.StartTick)
+    $startCommands = "echo TF2SFM_BATCH_CLIP_START_$($capture.Index); host_timescale 1; host_framerate 30; mirv_agr start $($capture.AgrLeaf)"
+    $actions.Add("`t`"$actionNumber`"`r`n`t{`r`n`t`tfactory `"PlayCommands`"`r`n`t`tname `"TF2SFM start AGR clip $($capture.Index)`"`r`n`t`tstarttick `"$recordTick`"`r`n`t`tcommands `"$startCommands`"`r`n`t}")
+    $actionNumber++
+    $stopCommands = "echo TF2SFM_BATCH_CLIP_STOP_$($capture.Index); mirv_agr stop; host_timescale 1; host_framerate 0"
+    if ($i -eq $captures.Count - 1) { $stopCommands += '; quit' }
+    $actions.Add("`t`"$actionNumber`"`r`n`t{`r`n`t`tfactory `"PlayCommands`"`r`n`t`tname `"TF2SFM stop AGR clip $($capture.Index)`"`r`n`t`tstarttick `"$($capture.EndTick)`"`r`n`t`tcommands `"$stopCommands`"`r`n`t}")
+    $actionNumber++
+    if ($i -lt $captures.Count - 1) {
+        $nextCapture = $captures[$i + 1]
+        $skipActionTick = $capture.EndTick + 1
+        $nextPreRollTick = [Math]::Max($skipActionTick, $nextCapture.StartTick - [Math]::Max(0, $PreRollTicks))
+        if ($nextPreRollTick -gt $skipActionTick) {
+            $actions.Add("`t`"$actionNumber`"`r`n`t{`r`n`t`tfactory `"SkipAhead`"`r`n`t`tname `"TF2SFM seek to clip $($nextCapture.Index)`"`r`n`t`tstarttick `"$skipActionTick`"`r`n`t`tskiptotick `"$nextPreRollTick`"`r`n`t}")
+            $actionNumber++
+        }
+    }
+}
 $vdmText = "demoactions`r`n{`r`n" + ($actions -join "`r`n") + "`r`n}`r`n"
 
 $cfgText = @"
@@ -253,11 +315,11 @@ if (Test-Path -LiteralPath $consoleLog -PathType Leaf) {
 }
 
 Write-Host ''
-Write-Host '=== TF2 retail/HLAE animation capture ===' -ForegroundColor Cyan
+Write-Host '=== TF2 retail/HLAE multi-clip animation capture ===' -ForegroundColor Cyan
 Write-Host "Demo:       $demo"
-Write-Host "Ticks:      $StartTick through $EndTick ($($EndTick - $StartTick) ticks, about $([Math]::Round(($EndTick - $StartTick) / 66.6667, 2)) seconds)"
+Write-Host "Clips:      $($captures.Count) in one TF2 process"
+foreach ($capture in $captures) { Write-Host "  Clip $($capture.Index): $($capture.StartTick)-$($capture.EndTick) -> $($capture.FinalAgr)" }
 Write-Host 'AGR rate:   30 fps (required by the AdvancedFX workflow)'
-Write-Host "Output:     $finalAgr"
 Write-Host "TF2:        $tfExe"
 Write-Host "HLAE:       $hlaeExe"
 Write-Host "Hook:       $hookDll"
@@ -299,7 +361,7 @@ while (-not $tfProcess.HasExited) {
         throw "Capture exceeded $TimeoutMinutes minutes. TF2 was left open for inspection."
     }
     if ([DateTime]::UtcNow.Subtract($lastProgress).TotalSeconds -ge 10) {
-        $candidate = $agrCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        $candidate = $allAgrCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
         if ($candidate) {
             Write-Host ("`n[AGR progress] {0:N0} bytes" -f (Get-Item -LiteralPath $candidate).Length) -ForegroundColor DarkCyan
         } else {
@@ -313,53 +375,59 @@ while (-not $tfProcess.HasExited) {
 Show-NewConsoleLog $consoleLog
 Write-Host "`nTF2 exited with code $($tfProcess.ExitCode)."
 
-$producedAgr = $agrCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-if (-not $producedAgr) {
-    if (Test-Path -LiteralPath $consoleLog) { Copy-Item -LiteralPath $consoleLog -Destination (Join-Path $project 'tf2_console.log') -Force }
-    throw 'HLAE did not create an AGR. Search tf2_console.log for TF2SFM_, mirv_agr, or Unknown command.'
-}
-Wait-ForExclusiveRead $producedAgr 60
-if ((Get-Item -LiteralPath $producedAgr).Length -lt 32) { throw 'The AGR exists but is too small to contain animation frames.' }
-
-$header = New-Object byte[] 18
-$stream = [IO.File]::OpenRead($producedAgr)
-try { $read = $stream.Read($header, 0, $header.Length) } finally { $stream.Dispose() }
-if ($read -ne 18 -or [Text.Encoding]::ASCII.GetString($header, 0, 13) -ne 'afxGameRecord' -or $header[13] -ne 0) {
-    throw 'The output does not have an afxGameRecord header.'
-}
-$agrVersion = [BitConverter]::ToInt32($header, 14)
-Move-Item -LiteralPath $producedAgr -Destination $finalAgr -Force
 if (Test-Path -LiteralPath $consoleLog) { Copy-Item -LiteralPath $consoleLog -Destination (Join-Path $project 'tf2_console.log') -Force }
 
-$settings = [ordered]@{
-    format = 'tf2-hlae-agr-capture'
-    format_version = 1
-    source_demo = $demo
-    start_demo_tick = $StartTick
-    end_demo_tick = $EndTick
-    duration_ticks = $EndTick - $StartTick
-    estimated_duration_seconds = ($EndTick - $StartTick) / 66.6667
-    pre_roll_ticks = $PreRollTicks
-    capture_fps = 30
-    capture_method = 'Retail TF2 x64 demo playback with HLAE AfxHookSource mirv_agr'
-    hlae_executable = $hlaeExe
-    hook_dll = $hookDll
-    tf2_executable = $tfExe
-    insecure = $true
-    remote_connect_command_issued = $false
-    agr_file = 'sfm_import.agr'
-    agr_version = $agrVersion
-    agr_size_bytes = (Get-Item -LiteralPath $finalAgr).Length
-    created_utc = [DateTime]::UtcNow.ToString('o')
+foreach ($capture in $captures) {
+    $producedAgr = $capture.AgrCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $producedAgr) {
+        throw "HLAE did not create AGR clip $($capture.Index). Search tf2_console.log for TF2SFM_BATCH_CLIP_$($capture.Index), mirv_agr, or Unknown command."
+    }
+    Wait-ForExclusiveRead $producedAgr 60
+    if ((Get-Item -LiteralPath $producedAgr).Length -lt 32) { throw "AGR clip $($capture.Index) is too small to contain animation frames." }
+    $header = New-Object byte[] 18
+    $stream = [IO.File]::OpenRead($producedAgr)
+    try { $read = $stream.Read($header, 0, $header.Length) } finally { $stream.Dispose() }
+    if ($read -ne 18 -or [Text.Encoding]::ASCII.GetString($header, 0, 13) -ne 'afxGameRecord' -or $header[13] -ne 0) {
+        throw "AGR clip $($capture.Index) does not have an afxGameRecord header."
+    }
+    $agrVersion = [BitConverter]::ToInt32($header, 14)
+    Move-Item -LiteralPath $producedAgr -Destination $capture.FinalAgr -Force
+    Copy-Item -LiteralPath $auditVdm -Destination (Join-Path $capture.ClipDirectory 'hlae_capture.vdm') -Force
+    Copy-Item -LiteralPath $auditCfg -Destination (Join-Path $capture.ClipDirectory 'hlae_bootstrap.cfg') -Force
+    if (Test-Path -LiteralPath $consoleLog) { Copy-Item -LiteralPath $consoleLog -Destination (Join-Path $capture.ClipDirectory 'tf2_console.log') -Force }
+    $settings = [ordered]@{
+        format = 'tf2-hlae-agr-capture'
+        format_version = 2
+        source_demo = $demo
+        start_demo_tick = $capture.StartTick
+        end_demo_tick = $capture.EndTick
+        duration_ticks = $capture.EndTick - $capture.StartTick
+        estimated_duration_seconds = ($capture.EndTick - $capture.StartTick) / 66.6667
+        pre_roll_ticks = $PreRollTicks
+        capture_fps = 30
+        capture_method = 'Retail TF2 x64 demo playback with HLAE AfxHookSource mirv_agr'
+        batch_capture = ($captures.Count -gt 1)
+        batch_clip_index = $capture.Index
+        batch_clip_count = $captures.Count
+        single_tf2_process = $true
+        hlae_executable = $hlaeExe
+        hook_dll = $hookDll
+        tf2_executable = $tfExe
+        insecure = $true
+        remote_connect_command_issued = $false
+        agr_file = 'sfm_import.agr'
+        agr_version = $agrVersion
+        agr_size_bytes = (Get-Item -LiteralPath $capture.FinalAgr).Length
+        created_utc = [DateTime]::UtcNow.ToString('o')
+    }
+    $settings | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $capture.ClipDirectory 'hlae_capture.json') -Encoding UTF8
+    Write-Host "Validated AGR clip $($capture.Index): $($capture.FinalAgr)" -ForegroundColor Green
 }
-$settings | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $project 'hlae_capture.json') -Encoding UTF8
 
 Remove-Item -LiteralPath $tempDemo, $tempVdm, $tempCfg -Force -ErrorAction SilentlyContinue
 
 Write-Host ''
-Write-Host 'HLAE AGR CAPTURE PASSED' -ForegroundColor Green
-Write-Host "File:        $finalAgr"
-Write-Host "Size:        $((Get-Item -LiteralPath $finalAgr).Length) bytes"
-Write-Host "AGR version: $agrVersion"
-Write-Host "Ticks:       $StartTick-$EndTick"
+Write-Host 'HLAE MULTI-CLIP AGR CAPTURE PASSED' -ForegroundColor Green
+Write-Host "Files:       $($captures.Count) separate sfm_import.agr files"
+Write-Host 'TF2 launches: 1'
 Write-Host 'This file contains the retail TF2 client animation result; it does not use the SDK ghost bones.'
