@@ -1,5 +1,5 @@
 TF2 STV to SFM retail HLAE capture pipeline
-Bundle version: 0.6.1
+Bundle version: 0.6.2
 Primary animation path: retail TF2 x64 + HLAE AfxHookSource mirv_agr
 Required HLAE: 2.189.0 or newer
 Capture rate: 30 fps
@@ -18,6 +18,7 @@ Verified in the build environment:
 - Mount hotfix: writes BOM-free UTF-8 KeyValues and uses normalized forward-slash paths; older SFM parsers reject a PowerShell UTF-8 BOM.
 - Recovery hotfix: restore scripts explicitly select the newest timestamped gameinfo backup and include an emergency restore BAT.
 - The GUI installs and validates the AdvancedFX `advancedfx_import_gameRecord.py` SFM rig in the selected SFM installation.
+- Packaging fix: the downloadable bundle retains the parser `src\\bin` source files required to build `export_all.exe`.
 
 Requires user-side verification:
 - Current retail TF2 can play the supplied demo and has the exact map/content it references.
